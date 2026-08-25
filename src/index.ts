@@ -17,13 +17,23 @@
  *
  * @module @morewax/dsh-spec-ptc
  */
+import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { ensureDaemon, DEFAULT_DAEMON_CONFIG } from './daemon.js'
 import type { SpecClient } from './client.js'
+import { startEndpoint } from './endpoint.js'
+import type { EndpointHandle, EndpointToolRuntime } from './endpoint.js'
+import { wrapRegister } from './wrap-registry.js'
+import type { WrappedDefinition, WrappableToolRuntime } from './wrap-registry.js'
+import { ReplFeedAdapter } from './repl-adapter.js'
+import type { ToolCallDeltaChunk } from './repl-adapter.js'
 
 export { SpecClient } from './client.js'
 export { ensureDaemon, DEFAULT_DAEMON_CONFIG } from './daemon.js'
+export { startEndpoint } from './endpoint.js'
+export { wrapRegister } from './wrap-registry.js'
+export { ReplFeedAdapter, rewriteLine } from './repl-adapter.js'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'spec-ptc'
@@ -39,6 +49,23 @@ export interface Config {
   args?: string[]
   /** Forward streamed chunks to the daemon. */
   feedEnabled?: boolean
+  /**
+   * Which engine the daemon speculates with: 'dsh' (harness tools via loopback
+   * callback — the full Phase 2 path) or 'stock' (upstream sub-LLM engine).
+   */
+  engine?: 'stock' | 'dsh'
+  /** Python interpreter for the dsh engine shim. */
+  pythonBin?: string
+  /**
+   * Public names of PURE tools the daemon may speculate. Speculation executes
+   * the tool during generation — only side-effect-free tools may ever be
+   * listed. Empty (default) disables dsh-engine speculation entirely.
+   */
+  speculatableTools?: string[]
+  /** Wrap ctx.tools.register so later registrations execute resolve-first. */
+  wrapRegistry?: boolean
+  /** Translate streamed run_code JSON arguments into upstream ```repl input. */
+  translateRunCode?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -47,6 +74,11 @@ export const Config: z<Config> = z.object({
   command: z.string().default(DEFAULT_DAEMON_CONFIG.command),
   args: z.array(String).default([]),
   feedEnabled: z.boolean().default(true),
+  engine: z.string().default('dsh'),
+  pythonBin: z.string().default('python3'),
+  speculatableTools: z.array(String).default([]),
+  wrapRegistry: z.boolean().default(true),
+  translateRunCode: z.boolean().default(true),
 }) as unknown as z<Config>
 
 /** The resolve service exposed on the context for Code Mode consumers. */
@@ -61,20 +93,53 @@ export interface SpecPtcService {
 interface SessionEventLike {
   type?: string
   turn?: number
-  chunk?: { type?: string; text?: string }
+  chunk?: {
+    type?: string
+    text?: string
+    index?: number
+    name?: string
+    argumentsDelta?: string
+  }
 }
 
 export async function apply(ctx: Context, config: Config): Promise<void> {
+  const speculatable = new Set(config.speculatableTools ?? [])
+  // The dsh engine shim is only meaningful with tools to speculate AND a
+  // callback endpoint to execute them through; anything less falls back to
+  // the upstream stock daemon (sub-LLM speculation only).
+  const wantDshEngine = (config.engine ?? 'dsh') === 'dsh' && speculatable.size > 0
+
+  let endpoint: EndpointHandle | undefined
+  if (wantDshEngine) {
+    const tools = (ctx as unknown as Record<string, unknown>).tools as EndpointToolRuntime | undefined
+    if (tools === undefined) {
+      ctx.logger.warn('spec-ptc: no tools runtime on context — falling back to the stock engine')
+    } else {
+      try {
+        endpoint = await startEndpoint({ tools, speculatable, logger: ctx.logger })
+      } catch (error) {
+        ctx.logger.warn(`spec-ptc: callback endpoint failed to start (${String(error)}) — falling back to the stock engine`)
+      }
+    }
+  }
+
+  const useDshEngine = wantDshEngine && endpoint !== undefined
   const daemon = await ensureDaemon({
     socketPath: config.socketPath ?? DEFAULT_DAEMON_CONFIG.socketPath,
     autoStart: config.autoStart ?? DEFAULT_DAEMON_CONFIG.autoStart,
     command: config.command ?? DEFAULT_DAEMON_CONFIG.command,
     args: config.args ?? [],
     startTimeoutMs: DEFAULT_DAEMON_CONFIG.startTimeoutMs,
+    engine: useDshEngine ? 'dsh' : 'stock',
+    pythonBin: config.pythonBin ?? 'python3',
+    shimPath: fileURLToPath(new URL('../python/dsh_spec_engine.py', import.meta.url)),
+    callbackUrl: endpoint?.url,
+    callbackToken: endpoint?.token,
   }, ctx.logger)
 
   if (daemon === undefined) {
     // Fail-open: plugin loads, speculation simply never happens.
+    if (endpoint !== undefined) await endpoint.close()
     return
   }
 
@@ -86,6 +151,25 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const bag = ctx as unknown as Record<string, unknown>
   bag.specPtc = service
 
+  // ---- resolve-first registry wrap (Phase 2) -----------------------------
+  // One wrap covers every dispatch path — direct model tool calls AND Code
+  // Mode nested dispatches. Load-order contract: this plugin must load BEFORE
+  // tool-providing plugins so their registrations are the ones wrapped.
+  let restoreRegister: (() => void) | undefined
+  if (config.wrapRegistry !== false && speculatable.size > 0) {
+    const runtime = bag.tools as WrappableToolRuntime | undefined
+    if (runtime !== undefined && typeof runtime.register === 'function') {
+      restoreRegister = wrapRegister(
+        runtime,
+        service.resolve,
+        speculatable,
+        (def: WrappedDefinition) => String(def.name),
+      ).restore
+    } else {
+      ctx.logger.warn('spec-ptc: tools runtime not wrappable — resolve-first limited to wrapBindings consumers')
+    }
+  }
+
   // ---- stream bridge -----------------------------------------------------
   // Feeds are serialized to preserve stream order; a feed failure disables
   // the bridge for the rest of the turn rather than spamming the log.
@@ -93,6 +177,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   let inTurn = false
   let feedChain: Promise<void> = Promise.resolve()
   let feedBroken = false
+  const replAdapter = new ReplFeedAdapter()
 
   const enqueue = (work: () => Promise<void>): void => {
     feedChain = feedChain.then(work).catch((error) => {
@@ -137,11 +222,21 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     const turn = event?.turn
     if (event?.type === 'assistant/chunk' && typeof turn === 'number') {
       if (!inTurn || turn !== lastTurn) beginTurn(turn)
-      const text = event.chunk?.text
-      if (typeof text === 'string' && text !== '') {
-        enqueue(async () => { await client.feed(text) })
+      const chunk = event.chunk
+      if (chunk?.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text !== '') {
+        // Preserve the stock upstream path (raw ```repl blocks in assistant text).
+        enqueue(async () => { await client.feed(chunk.text as string) })
+      } else if (
+        config.translateRunCode !== false
+        && chunk?.type === 'tool-call-delta'
+        && typeof chunk.index === 'number'
+        && typeof chunk.argumentsDelta === 'string'
+      ) {
+        const translated = replAdapter.push(chunk as ToolCallDeltaChunk)
+        for (const delta of translated) enqueue(async () => { await client.feed(delta) })
       }
     } else if (event?.type === 'assistant/message' && inTurn && turn === lastTurn) {
+      for (const delta of replAdapter.finish()) enqueue(async () => { await client.feed(delta) })
       endTurn()
     }
   })
@@ -149,7 +244,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.effect(() => {
     return () => {
       disposeListener()
+      restoreRegister?.()
       void daemon.dispose()
+      if (endpoint !== undefined) void endpoint.close()
       delete bag.specPtc
     }
   }, 'spec-ptc.daemon')

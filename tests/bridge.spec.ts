@@ -69,6 +69,32 @@ describe('stream bridge', () => {
     expect(feeds.map((m: object) => (m as { delta: string }).delta)).toEqual(['result = ', 'search("x")'])
   })
 
+
+  it('translates streamed run_code arguments before feeding the daemon', async () => {
+    const socketPath = sock()
+    daemon = await startFakeDaemon({ socketPath })
+    const ctx = makeCtx()
+    await apply(ctx, { socketPath, autoStart: false, translateRunCode: true })
+
+    const json = JSON.stringify({ code: 'x = await tools.search({"q":"spec"})\n', description: 'lookup' })
+    bus(ctx).emit('session/event', {}, {
+      type: 'assistant/chunk', turn: 1, step: 0,
+      chunk: { type: 'tool-call-delta', index: 0, name: 'run_code', argumentsDelta: json.slice(0, 17) },
+    })
+    bus(ctx).emit('session/event', {}, {
+      type: 'assistant/chunk', turn: 1, step: 0,
+      chunk: { type: 'tool-call-delta', index: 0, argumentsDelta: json.slice(17) },
+    })
+    bus(ctx).emit('session/event', {}, { type: 'assistant/message', turn: 1, step: 0 })
+
+    await until(() => daemon!.received.some((m: object) => (m as { op: string }).op === 'turn_end'))
+    const feeds = daemon!.received
+      .filter((m: object) => (m as { op: string }).op === 'feed')
+      .map((m: object) => (m as { delta: string }).delta)
+      .join('')
+    expect(feeds).toBe('```repl\nx = search({"q":"spec"})\n\n```\n')
+  })
+
   it('exposes the specPtc resolve service, hitting the daemon', async () => {
     const socketPath = sock()
     daemon = await startFakeDaemon({

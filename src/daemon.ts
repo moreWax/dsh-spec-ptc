@@ -22,6 +22,20 @@ export interface DaemonConfig {
   args: string[]
   /** How long to wait for a spawned daemon's socket to appear (default 8000). */
   startTimeoutMs: number
+  /**
+   * Which engine the daemon speculates with:
+   *  - 'stock': the upstream daemon's built-in engine (sub-LLM calls only).
+   *  - 'dsh': our engine shim — dsh harness tools executed via loopback callback.
+   */
+  engine?: 'stock' | 'dsh' | undefined
+  /** Python interpreter for the shim (engine 'dsh'; default python3). */
+  pythonBin?: string | undefined
+  /** Absolute path to the dsh_spec_engine.py shim (engine 'dsh'). */
+  shimPath?: string | undefined
+  /** Loopback base URL the shim calls back to (engine 'dsh'). */
+  callbackUrl?: string | undefined
+  /** Bearer token for the callback endpoint; passed to the child via env ONLY. */
+  callbackToken?: string | undefined
 }
 
 export interface DaemonHandle {
@@ -69,8 +83,19 @@ export async function ensureDaemon(
       logger.warn(`spec-ptc: no daemon socket at ${config.socketPath} and autoStart is off — speculation disabled`)
       return undefined
     }
-    spawned = spawn(config.command, config.args, {
-      env: scrubbedParentEnv() as NodeJS.ProcessEnv,
+    const isDsh = config.engine === 'dsh' && config.shimPath !== undefined && config.callbackUrl !== undefined
+    const spawnCommand = isDsh ? (config.pythonBin ?? 'python3') : config.command
+    const spawnArgs = isDsh
+      ? [config.shimPath as string, '--socket', config.socketPath, '--callback', config.callbackUrl as string, ...config.args]
+      : config.args
+    const childEnv: Record<string, string> = { ...scrubbedParentEnv() } as Record<string, string>
+    if (isDsh && config.callbackToken !== undefined) {
+      // The callback credential travels by env only — never argv (visible in
+      // ps), never config files, never logs.
+      childEnv.DSH_SPEC_CALLBACK_TOKEN = config.callbackToken
+    }
+    spawned = spawn(spawnCommand, spawnArgs, {
+      env: childEnv as NodeJS.ProcessEnv,
       stdio: 'ignore',
       detached: false,
     })

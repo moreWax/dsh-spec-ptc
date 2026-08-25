@@ -27,13 +27,49 @@ dsh plugin add @morewax/dsh-spec-ptc # this bridge
 
 | Piece | How |
 |---|---|
-| Stream bridge | Listens to the session event log (`assistant/chunk`) and feeds text deltas to the daemon as the model streams |
+| Stream bridge | Listens to `assistant/chunk`; translates streamed `run_code` JSON arguments into upstream ` ```repl ` input |
 | Turn lifecycle | First chunk of a turn → `turn_begin`; committed `assistant/message` → `turn_end` (metrics logged) |
 | Resolve service | `specPtc` on the context: `resolve(tool, args)` → hit (claimed result) or miss |
-| Binding helper | `wrapBindings()` gives any Code Mode binding table resolve-first semantics in one line |
-| Daemon lifecycle | Spawns `spec-ptc-daemon` when the socket is absent (scrubbed env), kills it on disposal — only if it spawned it |
+| Registry wrap | Wraps later `ctx.tools.register()` calls resolve-first, covering direct calls and built-in Code Mode without upstream patches |
+| Binding helper | `wrapBindings()` remains available for custom binding tables |
+| dsh engine shim | Registers allowlisted dsh tools in the upstream daemon and calls them speculatively through an authenticated loopback endpoint |
+| Daemon lifecycle | Spawns the shim/daemon with scrubbed env and disposes only processes it owns |
 
-## Resolve-first for Code Mode
+
+## Phase 2: automatic Code Mode integration
+
+Phase 2 closes the full loop without changing DeepSeek Harness:
+
+1. Streamed `run_code` argument JSON is decoded incrementally across arbitrary
+   chunk and escape boundaries.
+2. Python Code Mode calls such as `await tools.search(args)` are translated to
+   the bare-name `search(args)` form expected by upstream's Python shadow REPL.
+3. A custom upstream engine registers only the explicitly allowlisted dsh
+   tools. Its speculative calls return through a `127.0.0.1` endpoint guarded
+   by a random per-process bearer token passed to the child through env only.
+4. `ctx.tools.register()` is wrapped so subsequently registered tools claim a
+   cached result first, then fail open to their original `execute` on a miss.
+
+### Safety contract
+
+**Only pure, side-effect-free tools may appear in `speculatableTools`.** A
+speculative call can run even when the final generated program never reaches
+it. Never allowlist writes, shell execution, mutations, purchases, messages,
+or other side effects. The endpoint hard-refuses everything outside the
+allowlist.
+
+The plugin row must load **before tool-providing plugins**, because it wraps
+future registrations. The stack initializer writes the spec-ptc row first.
+
+### Language limitation
+
+Upstream spec-ptc's shadow executor is Python (`ast.parse`) and opens
+` ```repl ` blocks. Automatic Phase 2 speculation therefore targets dsh's
+**Python Code Mode flavor**. TypeScript Code Mode remains fully fail-open but
+will miss rather than speculate until upstream gains a TypeScript shadow
+runtime.
+
+## Resolve-first for custom Code Mode bindings
 
 ```ts
 import { wrapBindings } from '@morewax/dsh-spec-ptc/bindings'
@@ -54,8 +90,14 @@ accelerator, never a dependency.
   name: '@morewax/dsh-spec-ptc'
   config:
     socketPath: /tmp/spec-ptc.sock
-    autoStart: true      # spawn the daemon when the socket is absent
+    autoStart: true
+    engine: dsh            # custom shim; stock keeps upstream sub-LLM tools
     feedEnabled: true
+    translateRunCode: true
+    wrapRegistry: true
+    speculatableTools:     # PURE READS ONLY
+      - search
+      - read_file
 ```
 
 ## The same daemon serves your own harness loops
@@ -70,12 +112,14 @@ is shared infrastructure, not a dsh-only feature.
 ```bash
 pnpm install
 pnpm run typecheck   # 0 errors
-pnpm test            # 12 tests: wire protocol, wrapBindings, stream bridge, fail-open
+pnpm test            # 30 tests: protocol, adapter, endpoint, registry wrap, fail-open
 pnpm run build
 ```
 
-Tests run against a fake Node daemon speaking the exact upstream wire
-protocol — no Python needed.
+The default suite uses a fake Node daemon speaking the exact upstream wire
+protocol — no Python required in CI. The full shim → loopback callback →
+shadow execution → resolve path was additionally live-validated against
+upstream spec-ptc 0.1.1: one speculation, one claimed hit, zero evictions.
 
 ## License
 

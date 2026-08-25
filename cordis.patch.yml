@@ -8,3 +8,7 @@
     socketPath: /tmp/spec-ptc.sock
     autoStart: true        # spawns spec-ptc-daemon when the socket is absent
     feedEnabled: true
+    engine: dsh
+    translateRunCode: true
+    wrapRegistry: true
+    speculatableTools: []  # PURE tools only; explicit opt-in
