@@ -37,6 +37,10 @@ export { ReplFeedAdapter, rewriteLine } from './repl-adapter.js'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'spec-ptc'
+/** Tool registry required for callback execution and resolve-first lookup interception. */
+export const inject = ['tools']
+/** Resolve service mounted for optional consumers. */
+export const provide = ['specPtc']
 
 export interface Config {
   /** Unix socket the daemon listens on. */
@@ -149,7 +153,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     available: () => true,
   }
   const bag = ctx as unknown as Record<string, unknown>
-  bag.specPtc = service
+  ctx.provide('specPtc', service)
 
   // ---- resolve-first registry wrap (Phase 2) -----------------------------
   // One lookup wrap covers existing and future definitions, including direct
@@ -241,7 +245,6 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       restoreRegister?.()
       void daemon.dispose()
       if (endpoint !== undefined) void endpoint.close()
-      delete bag.specPtc
     }
   }, 'spec-ptc.daemon')
 }

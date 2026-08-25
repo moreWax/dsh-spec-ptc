@@ -69,6 +69,29 @@ describe('callback endpoint', () => {
     } finally { await ep.close() }
   })
 
+  it('prefers the complete registry execute pipeline when available', async () => {
+    let directCalled = false
+    let input: unknown
+    const ep = await startEndpoint({
+      tools: {
+        get: () => ({ execute: async () => { directCalled = true; return 'DIRECT' } }),
+        execute: async (next) => { input = next; return { isError: false, value: 'PIPELINE' } },
+      },
+      speculatable: new Set(['search']),
+      logger,
+    })
+    try {
+      const res = await fetch(`${ep.url}/execute`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${ep.token}` },
+        body: JSON.stringify({ tool: 'search', args: { q: 'x' } }),
+      })
+      expect(await res.json()).toEqual({ result: 'PIPELINE' })
+      expect(directCalled).toBe(false)
+      expect(input).toMatchObject({ name: 'search', arguments: { q: 'x' } })
+    } finally { await ep.close() }
+  })
+
   it('surfaces tool errors as isError without crashing', async () => {
     const ep = await startEndpoint({
       tools: doubleTools({ search: async () => { throw new Error('backend down') } }),

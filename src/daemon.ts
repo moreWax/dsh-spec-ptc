@@ -110,6 +110,22 @@ export async function ensureDaemon(
     }
     logger.info(`spec-ptc: daemon spawned (${config.command}), socket at ${config.socketPath}`)
   }
+  // Normal Cordis disposal owns graceful shutdown. These process hooks cover
+  // forced CLI termination (SIGTERM/SIGINT), where plugin effects may not run.
+  let removeProcessHooks = (): void => {}
+  if (spawned !== undefined) {
+    const killOwned = (): void => { if (spawned !== undefined && !spawned.killed) spawned.kill() }
+    const onSigterm = (): void => { killOwned(); process.exitCode = 143 }
+    const onSigint = (): void => { killOwned(); process.exitCode = 130 }
+    process.once('exit', killOwned)
+    process.once('SIGTERM', onSigterm)
+    process.once('SIGINT', onSigint)
+    removeProcessHooks = () => {
+      process.removeListener('exit', killOwned)
+      process.removeListener('SIGTERM', onSigterm)
+      process.removeListener('SIGINT', onSigint)
+    }
+  }
   try {
     const client = await SpecClient.connect(config.socketPath)
     return {
@@ -117,6 +133,7 @@ export async function ensureDaemon(
       spawned: spawned !== undefined,
       async dispose() {
         client.close()
+        removeProcessHooks()
         if (spawned !== undefined && !spawned.killed) {
           spawned.kill()
           await new Promise<void>((resolvePromise) => {
@@ -127,6 +144,7 @@ export async function ensureDaemon(
       },
     }
   } catch (error) {
+    removeProcessHooks()
     if (spawned !== undefined && !spawned.killed) spawned.kill()
     logger.warn(`spec-ptc: cannot reach daemon at ${config.socketPath}: ${String(error)} — speculation disabled`)
     return undefined

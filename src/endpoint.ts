@@ -23,6 +23,8 @@ export interface EndpointToolDefinition {
 export interface EndpointToolRuntime {
   /** Resolve a registered tool definition by public name; undefined when absent. */
   get(name: string): EndpointToolDefinition | undefined
+  /** Execute through the complete registry pipeline when available. */
+  execute?(input: { callId: string; name: string; arguments: unknown; signal: AbortSignal }): Promise<{ isError: boolean; value?: unknown; error?: { message?: string } }>
 }
 
 export interface EndpointHandle {
@@ -82,6 +84,19 @@ export async function startEndpoint(opts: EndpointOptions): Promise<EndpointHand
         const definition = opts.tools.get(payload.tool)
         if (definition === undefined) return send(404, { error: `unknown tool "${payload.tool}"` })
         try {
+          if (typeof opts.tools.execute === 'function') {
+            // Use dsh's public registry pipeline: validation, policy, timeout,
+            // canonical result materialization, and lifecycle all stay intact.
+            const outcome = await opts.tools.execute({
+              callId: `spec-ptc:${randomBytes(8).toString('hex')}`,
+              name: payload.tool,
+              arguments: payload.args ?? {},
+              signal: new AbortController().signal,
+            })
+            if (outcome.isError) return send(200, { isError: true, error: outcome.error?.message ?? 'tool failed' })
+            return send(200, { result: outcome.value })
+          }
+          // Structural test doubles and older runtimes may expose only get().
           const result = await definition.execute(payload.args ?? {}, { signal: new AbortController().signal })
           return send(200, { result })
         } catch (error) {

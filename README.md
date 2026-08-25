@@ -33,7 +33,7 @@ dsh plugin add @morewax/dsh-spec-ptc # this bridge
 | Registry wrap | Wraps `ctx.tools.get()` resolve-first, covering existing and future tools, direct calls, and built-in Code Mode without upstream patches |
 | Binding helper | `wrapBindings()` remains available for custom binding tables |
 | dsh engine shim | Registers allowlisted dsh tools in the upstream daemon and calls them speculatively through an authenticated loopback endpoint |
-| Daemon lifecycle | Spawns the shim/daemon with scrubbed env and disposes only processes it owns |
+| Daemon lifecycle | Spawns the shim/daemon with scrubbed env, disposes only processes it owns, and kills the owned child on CLI signals |
 
 
 ## Phase 2: automatic Code Mode integration
@@ -45,7 +45,7 @@ Phase 2 closes the full loop without changing DeepSeek Harness:
 2. Python Code Mode calls such as `await tools.search(args)` are translated to
    the bare-name `search(args)` form expected by upstream's Python shadow REPL.
 3. A custom upstream engine registers only the explicitly allowlisted dsh
-   tools. Its speculative calls return through a `127.0.0.1` endpoint guarded
+   tools. Its speculative calls return through dsh's complete tool execution pipeline behind a `127.0.0.1` endpoint guarded
    by a random per-process bearer token passed to the child through env only.
 4. `ctx.tools.get()` is wrapped so both existing and future definitions claim a
    cached result first, then fail open to their original `execute` on a miss.
@@ -112,7 +112,7 @@ is shared infrastructure, not a dsh-only feature.
 ```bash
 pnpm install
 pnpm run typecheck   # 0 errors
-pnpm test            # 30 tests: protocol, adapter, endpoint, registry wrap, fail-open
+pnpm test            # 34 tests: protocol, adapter, endpoint, registry wrap, fail-open
 pnpm run build
 ```
 
