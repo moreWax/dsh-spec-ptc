@@ -65,7 +65,8 @@ bundle ordering is not part of the correctness contract.
 
 Upstream spec-ptc's shadow executor is Python (`ast.parse`) and opens
 ` ```repl ` blocks. Automatic Phase 2 speculation therefore targets dsh's
-**Python Code Mode flavor**. TypeScript Code Mode remains fully fail-open but
+**Python Code Mode flavor**, provided by
+[`@morewax/dsh-code-runtime-python`](https://github.com/moreWax/dsh-code-runtime-python). TypeScript Code Mode remains fully fail-open but
 will miss rather than speculate until upstream gains a TypeScript shadow
 runtime.
 
