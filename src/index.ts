@@ -58,8 +58,8 @@ export interface Config {
    * callback — the full Phase 2 path) or 'stock' (upstream sub-LLM engine).
    */
   engine?: 'stock' | 'dsh'
-  /** Python interpreter for the dsh engine shim. */
-  pythonBin?: string
+  /** uv executable for the locked dsh engine project. */
+  uvBin?: string
   /**
    * Public names of PURE tools the daemon may speculate. Speculation executes
    * the tool during generation — only side-effect-free tools may ever be
@@ -79,7 +79,7 @@ export const Config: z<Config> = z.object({
   args: z.array(String).default([]),
   feedEnabled: z.boolean().default(true),
   engine: z.string().default('dsh'),
-  pythonBin: z.string().default('python3'),
+  uvBin: z.string().default('uv'),
   speculatableTools: z.array(String).default([]),
   wrapRegistry: z.boolean().default(true),
   translateRunCode: z.boolean().default(true),
@@ -135,7 +135,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     args: config.args ?? [],
     startTimeoutMs: DEFAULT_DAEMON_CONFIG.startTimeoutMs,
     engine: useDshEngine ? 'dsh' : 'stock',
-    pythonBin: config.pythonBin ?? 'python3',
+    uvBin: config.uvBin ?? 'uv',
     shimPath: fileURLToPath(new URL('../python/dsh_spec_engine.py', import.meta.url)),
     callbackUrl: endpoint?.url,
     callbackToken: endpoint?.token,

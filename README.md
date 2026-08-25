@@ -19,8 +19,8 @@ Technique and daemon: [`alexzhang13/spec-ptc`](https://github.com/alexzhang13/sp
 ## Install
 
 ```bash
-pip install spec-ptc                 # the upstream daemon (Python)
-dsh plugin add @morewax/dsh-spec-ptc # this bridge
+# uv must be installed; the plugin's locked project installs spec-ptc==0.1.1
+dsh plugin add @morewax/dsh-spec-ptc
 ```
 
 ## What it does in dsh

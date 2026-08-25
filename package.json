@@ -1,7 +1,7 @@
 {
   "name": "@morewax/dsh-spec-ptc",
   "version": "0.1.0",
-  "description": "Speculative programmatic tool calling (sPTC) for DeepSeek Harness — pre-runs tool calls during model generation via the upstream spec-ptc daemon",
+  "description": "Speculative programmatic tool calling (sPTC) for DeepSeek Harness \u2014 pre-runs tool calls during model generation via the upstream spec-ptc daemon",
   "license": "MIT",
   "type": "module",
   "exports": {
@@ -35,7 +35,7 @@
     "build": "tsdown src/index.ts src/bindings.ts --format esm --dts --out-dir lib",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:shim": "python3 -m py_compile python/dsh_spec_engine.py"
+    "test:shim": "uv run --project python --locked --no-dev python -m py_compile python/dsh_spec_engine.py"
   },
   "dependencies": {
     "@deepseek-ai/dsh-subprocess": "0.1.1-rc.2",

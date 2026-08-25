@@ -1,0 +1,5 @@
+[project]
+name = "dsh-spec-ptc-engine"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["spec-ptc==0.1.1"]

@@ -1,2 +1,4 @@
 node_modules/
 lib/
+python/.venv/
+python/__pycache__/

@@ -6,6 +6,7 @@
  * @module
  */
 import { existsSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess'
@@ -28,8 +29,8 @@ export interface DaemonConfig {
    *  - 'dsh': our engine shim — dsh harness tools executed via loopback callback.
    */
   engine?: 'stock' | 'dsh' | undefined
-  /** Python interpreter for the shim (engine 'dsh'; default python3). */
-  pythonBin?: string | undefined
+  /** uv executable for the locked shim project (engine 'dsh'; default uv). */
+  uvBin?: string | undefined
   /** Absolute path to the dsh_spec_engine.py shim (engine 'dsh'). */
   shimPath?: string | undefined
   /** Loopback base URL the shim calls back to (engine 'dsh'). */
@@ -84,9 +85,10 @@ export async function ensureDaemon(
       return undefined
     }
     const isDsh = config.engine === 'dsh' && config.shimPath !== undefined && config.callbackUrl !== undefined
-    const spawnCommand = isDsh ? (config.pythonBin ?? 'python3') : config.command
+    const spawnCommand = isDsh ? (config.uvBin ?? 'uv') : config.command
+    const pythonProject = isDsh ? dirname(config.shimPath as string) : ''
     const spawnArgs = isDsh
-      ? [config.shimPath as string, '--socket', config.socketPath, '--callback', config.callbackUrl as string, ...config.args]
+      ? ['run', '--project', pythonProject, '--locked', '--no-dev', 'python', config.shimPath as string, '--socket', config.socketPath, '--callback', config.callbackUrl as string, ...config.args]
       : config.args
     const childEnv: Record<string, string> = { ...scrubbedParentEnv() } as Record<string, string>
     if (isDsh && config.callbackToken !== undefined) {
