@@ -1,7 +1,20 @@
-# dsh-spec-ptc: speculative programmatic tool calling. The bundle inserts
-# its own row; later user/profile overlays may override it by id.
-# Fail-open: no daemon or empty allowlist -> tools execute normally.
+# Complete Python speculative Code Mode capability in one bundle.
+# Upstream spec-ptc's shadow evaluator is Python, so this bundle intentionally
+# replaces the stock TypeScript CodeRuntime for the selected profile.
+- id: code-runtime
+  disabled: true
 - insert:
+    - id: code-runtime-python-uv
+      name: '@morewax/dsh-spec-ptc/python-runtime'
+      config:
+        uv: uv
+        python: '3.12'
+        cpuSeconds: 60
+        maxWallMs: 600000
+        addressSpaceBytes: 536870912
+        maxOutputBytes: 67108864
+        maxFrameBytes: 67108864
+
     - id: spec-ptc
       name: '@morewax/dsh-spec-ptc'
       config:
@@ -9,6 +22,7 @@
         autoStart: true
         feedEnabled: true
         engine: dsh
+        uvBin: uv
         translateRunCode: true
         wrapRegistry: true
         speculatableTools: []  # PURE tools only; explicit opt-in

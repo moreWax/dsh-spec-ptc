@@ -25,6 +25,7 @@ jobs:
       - run: pnpm run typecheck
       - run: pnpm test
       - run: pnpm run test:shim
+      - run: pnpm run test:python
       - run: pnpm run build
       - run: npm publish --provenance --access public
         env:

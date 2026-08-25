@@ -19,8 +19,8 @@ Technique and daemon: [`alexzhang13/spec-ptc`](https://github.com/alexzhang13/sp
 ## Install
 
 ```bash
-# uv must be installed; the plugin's locked project installs spec-ptc==0.1.1
-dsh plugin add @morewax/dsh-spec-ptc
+# uv must be installed; this one bundle supplies both Python Code Mode and sPTC
+dsh plugin --profile <profile> add @morewax/dsh-spec-ptc
 ```
 
 ## What it does in dsh
@@ -32,6 +32,7 @@ dsh plugin add @morewax/dsh-spec-ptc
 | Resolve service | `specPtc` on the context: `resolve(tool, args)` → hit (claimed result) or miss |
 | Registry wrap | Wraps `ctx.tools.get()` resolve-first, covering existing and future tools, direct calls, and built-in Code Mode without upstream patches |
 | Binding helper | `wrapBindings()` remains available for custom binding tables |
+| Python CodeRuntime | Included uv-managed CPython provider replaces the stock TypeScript runtime in the selected profile |
 | dsh engine shim | Registers allowlisted dsh tools in the upstream daemon and calls them speculatively through an authenticated loopback endpoint |
 | Daemon lifecycle | Spawns the shim/daemon with scrubbed env, disposes only processes it owns, and kills the owned child on CLI signals |
 
@@ -65,10 +66,7 @@ bundle ordering is not part of the correctness contract.
 
 Upstream spec-ptc's shadow executor is Python (`ast.parse`) and opens
 ` ```repl ` blocks. Automatic Phase 2 speculation therefore targets dsh's
-**Python Code Mode flavor**, provided by
-[`@morewax/dsh-code-runtime-python`](https://github.com/moreWax/dsh-code-runtime-python). TypeScript Code Mode remains fully fail-open but
-will miss rather than speculate until upstream gains a TypeScript shadow
-runtime.
+**Python Code Mode flavor**, provided directly by this package's `./python-runtime` subpath. Installing this bundle intentionally disables the selected profile's stock TypeScript CodeRuntime and mounts the included Python provider. Remove the bundle to return to TypeScript Code Mode.
 
 ## Resolve-first for custom Code Mode bindings
 
@@ -113,7 +111,7 @@ is shared infrastructure, not a dsh-only feature.
 ```bash
 pnpm install
 pnpm run typecheck   # 0 errors
-pnpm test            # 34 tests: protocol, adapter, endpoint, registry wrap, fail-open
+pnpm test            # protocol, daemon, endpoint, adapter, and real uv/CPython runtime tests: protocol, adapter, endpoint, registry wrap, fail-open
 pnpm run build
 ```
 
