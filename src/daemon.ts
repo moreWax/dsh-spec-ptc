@@ -5,7 +5,7 @@
  *
  * @module
  */
-import { existsSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
@@ -142,6 +142,7 @@ export async function ensureDaemon(
             spawned?.once('exit', () => { resolvePromise() })
             setTimeout(resolvePromise, 2000).unref()
           })
+          rmSync(config.socketPath, { force: true })
         }
       },
     }
