@@ -1,0 +1,10 @@
+# dsh-spec-ptc: speculative programmatic tool calling. While the model
+# streams a code block, the upstream spec-ptc daemon pre-launches the tool
+# calls already visible in the partial code; execution claims them instantly.
+# Fail-open: no daemon -> everything executes exactly as without this plugin.
+- id: spec-ptc
+  name: '@morewax/dsh-spec-ptc'
+  config:
+    socketPath: /tmp/spec-ptc.sock
+    autoStart: true        # spawns spec-ptc-daemon when the socket is absent
+    feedEnabled: true
