@@ -1,75 +1,62 @@
 import { describe, expect, it } from 'vitest'
-import { wrapRegister } from '../src/wrap-registry.js'
+import { wrapLookup } from '../src/wrap-registry.js'
 import type { ResolveFn, WrappedDefinition, WrappableToolRuntime } from '../src/wrap-registry.js'
 
-function doubleRuntime() {
-  const registered: WrappedDefinition[] = []
-  const runtime: WrappableToolRuntime = {
-    register(def: WrappedDefinition) {
-      registered.push(def)
-      return () => {}
-    },
-  }
-  return { runtime, registered }
+function doubleRuntime(defs: Record<string, WrappedDefinition>) {
+  const runtime: WrappableToolRuntime = { get(name: string) { return defs[name] } }
+  return runtime
 }
 
-describe('wrapRegister', () => {
-  it('resolves a speculative hit without calling the original execute', async () => {
-    const { runtime, registered } = doubleRuntime()
+describe('wrapLookup', () => {
+  it('wraps definitions that existed before activation', async () => {
     let originalCalled = false
-    const resolve: ResolveFn = async (tool, args) =>
-      tool === 'search' && JSON.stringify(args) === JSON.stringify([{ q: 'x' }])
-        ? { hit: true, result: 'SPECULATIVE' }
-        : { hit: false }
-    wrapRegister(runtime, resolve, new Set(['search']), (def) => String(def.name))
-    runtime.register({ name: 'search', execute: async () => { originalCalled = true; return 'REAL' } })
-    const def = registered[0]!
-    expect(await def.execute({ q: 'x' }, {})).toBe('SPECULATIVE')
+    const runtime = doubleRuntime({ search: { name: 'search', execute: async () => { originalCalled = true; return 'REAL' } } })
+    const resolve: ResolveFn = async (tool, args) => tool === 'search' && JSON.stringify(args) === '[{"q":"x"}]'
+      ? { hit: true, result: 'SPECULATIVE' } : { hit: false }
+    wrapLookup(runtime, resolve, new Set(['search']))
+    expect(await runtime.get('search')!.execute({ q: 'x' }, {})).toBe('SPECULATIVE')
     expect(originalCalled).toBe(false)
   })
 
-  it('falls through to the original on miss', async () => {
-    const { runtime, registered } = doubleRuntime()
-    const resolve: ResolveFn = async () => ({ hit: false })
-    wrapRegister(runtime, resolve, new Set(['search']), (def) => String(def.name))
-    runtime.register({ name: 'search', execute: async () => 'REAL' })
-    expect(await registered[0]!.execute({}, {})).toBe('REAL')
+  it('wraps definitions registered after activation', async () => {
+    const defs: Record<string, WrappedDefinition> = {}
+    const runtime = doubleRuntime(defs)
+    wrapLookup(runtime, async () => ({ hit: true, result: 'HIT' }), new Set(['search']))
+    defs.search = { name: 'search', execute: async () => 'REAL' }
+    expect(await runtime.get('search')!.execute({}, {})).toBe('HIT')
   })
 
-  it('fails open when the resolver throws', async () => {
-    const { runtime, registered } = doubleRuntime()
-    const resolve: ResolveFn = async () => { throw new Error('daemon gone') }
-    wrapRegister(runtime, resolve, new Set(['search']), (def) => String(def.name))
-    runtime.register({ name: 'search', execute: async () => 'REAL' })
-    expect(await registered[0]!.execute({}, {})).toBe('REAL')
+  it('falls through on a miss and on resolver failure', async () => {
+    const definition = { name: 'search', execute: async () => 'REAL' }
+    const miss = doubleRuntime({ search: definition })
+    wrapLookup(miss, async () => ({ hit: false }), new Set(['search']))
+    expect(await miss.get('search')!.execute({}, {})).toBe('REAL')
+    const broken = doubleRuntime({ search: definition })
+    wrapLookup(broken, async () => { throw new Error('daemon gone') }, new Set(['search']))
+    expect(await broken.get('search')!.execute({}, {})).toBe('REAL')
   })
 
-  it('registers non-speculatable tools untouched (identity preserved)', () => {
-    const { runtime, registered } = doubleRuntime()
-    const resolve: ResolveFn = async () => ({ hit: true, result: 'NEVER' })
-    wrapRegister(runtime, resolve, new Set(['search']), (def) => String(def.name))
-    const original: WrappedDefinition = { name: 'write_file', execute: async () => 'WROTE' }
-    runtime.register(original)
-    expect(registered[0]).toBe(original)
+  it('returns non-speculatable definitions untouched', () => {
+    const original: WrappedDefinition = { name: 'write', execute: async () => null }
+    const runtime = doubleRuntime({ write: original })
+    wrapLookup(runtime, async () => ({ hit: true, result: null }), new Set(['search']))
+    expect(runtime.get('write')).toBe(original)
   })
 
-  it('restore() returns register to the original function', () => {
-    const { runtime } = doubleRuntime()
-    const originalRegister = runtime.register
-    const handle = wrapRegister(runtime, async () => ({ hit: false }), new Set(['a']), (def) => String(def.name))
-    expect(runtime.register).not.toBe(originalRegister)
+  it('memoizes a wrapper per original identity and preserves sibling fields', () => {
+    const original: WrappedDefinition = { name: 'search', description: 'find', execute: async () => null }
+    const runtime = doubleRuntime({ search: original })
+    wrapLookup(runtime, async () => ({ hit: false }), new Set(['search']))
+    expect(runtime.get('search')).toBe(runtime.get('search'))
+    expect(runtime.get('search')!.description).toBe('find')
+  })
+
+  it('restore returns the original lookup behavior', () => {
+    const original: WrappedDefinition = { name: 'search', execute: async () => null }
+    const runtime = doubleRuntime({ search: original })
+    const handle = wrapLookup(runtime, async () => ({ hit: true, result: null }), new Set(['search']))
+    expect(runtime.get('search')).not.toBe(original)
     handle.restore()
-    // bound original is a new function object but calls through identically
-    const defs: WrappedDefinition[] = []
-    runtime.register = runtime.register.bind(runtime)
-    expect(typeof runtime.register).toBe('function')
-    void defs
-  })
-
-  it('preserves sibling definition fields on the wrapped copy', () => {
-    const { runtime, registered } = doubleRuntime()
-    wrapRegister(runtime, async () => ({ hit: false }), new Set(['search']), (def) => String(def.name))
-    runtime.register({ name: 'search', description: 'find things', execute: async () => null })
-    expect(registered[0]!.description).toBe('find things')
+    expect(runtime.get('search')).toBe(original)
   })
 })

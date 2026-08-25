@@ -30,7 +30,7 @@ dsh plugin add @morewax/dsh-spec-ptc # this bridge
 | Stream bridge | Listens to `assistant/chunk`; translates streamed `run_code` JSON arguments into upstream ` ```repl ` input |
 | Turn lifecycle | First chunk of a turn → `turn_begin`; committed `assistant/message` → `turn_end` (metrics logged) |
 | Resolve service | `specPtc` on the context: `resolve(tool, args)` → hit (claimed result) or miss |
-| Registry wrap | Wraps later `ctx.tools.register()` calls resolve-first, covering direct calls and built-in Code Mode without upstream patches |
+| Registry wrap | Wraps `ctx.tools.get()` resolve-first, covering existing and future tools, direct calls, and built-in Code Mode without upstream patches |
 | Binding helper | `wrapBindings()` remains available for custom binding tables |
 | dsh engine shim | Registers allowlisted dsh tools in the upstream daemon and calls them speculatively through an authenticated loopback endpoint |
 | Daemon lifecycle | Spawns the shim/daemon with scrubbed env and disposes only processes it owns |
@@ -47,7 +47,7 @@ Phase 2 closes the full loop without changing DeepSeek Harness:
 3. A custom upstream engine registers only the explicitly allowlisted dsh
    tools. Its speculative calls return through a `127.0.0.1` endpoint guarded
    by a random per-process bearer token passed to the child through env only.
-4. `ctx.tools.register()` is wrapped so subsequently registered tools claim a
+4. `ctx.tools.get()` is wrapped so both existing and future definitions claim a
    cached result first, then fail open to their original `execute` on a miss.
 
 ### Safety contract
@@ -58,8 +58,8 @@ it. Never allowlist writes, shell execution, mutations, purchases, messages,
 or other side effects. The endpoint hard-refuses everything outside the
 allowlist.
 
-The plugin row must load **before tool-providing plugins**, because it wraps
-future registrations. The stack initializer writes the spec-ptc row first.
+Registry lookup interception covers tools registered before or after this plugin;
+bundle ordering is not part of the correctness contract.
 
 ### Language limitation
 

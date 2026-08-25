@@ -24,15 +24,15 @@ import { ensureDaemon, DEFAULT_DAEMON_CONFIG } from './daemon.js'
 import type { SpecClient } from './client.js'
 import { startEndpoint } from './endpoint.js'
 import type { EndpointHandle, EndpointToolRuntime } from './endpoint.js'
-import { wrapRegister } from './wrap-registry.js'
-import type { WrappedDefinition, WrappableToolRuntime } from './wrap-registry.js'
+import { wrapLookup } from './wrap-registry.js'
+import type { WrappableToolRuntime } from './wrap-registry.js'
 import { ReplFeedAdapter } from './repl-adapter.js'
 import type { ToolCallDeltaChunk } from './repl-adapter.js'
 
 export { SpecClient } from './client.js'
 export { ensureDaemon, DEFAULT_DAEMON_CONFIG } from './daemon.js'
 export { startEndpoint } from './endpoint.js'
-export { wrapRegister } from './wrap-registry.js'
+export { wrapLookup } from './wrap-registry.js'
 export { ReplFeedAdapter, rewriteLine } from './repl-adapter.js'
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -62,7 +62,7 @@ export interface Config {
    * listed. Empty (default) disables dsh-engine speculation entirely.
    */
   speculatableTools?: string[]
-  /** Wrap ctx.tools.register so later registrations execute resolve-first. */
+  /** Wrap ctx.tools.get so existing and future definitions execute resolve-first. */
   wrapRegistry?: boolean
   /** Translate streamed run_code JSON arguments into upstream ```repl input. */
   translateRunCode?: boolean
@@ -152,19 +152,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   bag.specPtc = service
 
   // ---- resolve-first registry wrap (Phase 2) -----------------------------
-  // One wrap covers every dispatch path — direct model tool calls AND Code
-  // Mode nested dispatches. Load-order contract: this plugin must load BEFORE
-  // tool-providing plugins so their registrations are the ones wrapped.
+  // One lookup wrap covers existing and future definitions, including direct
+  // model tool calls and Code Mode nested dispatches. Bundle order is irrelevant.
   let restoreRegister: (() => void) | undefined
   if (config.wrapRegistry !== false && speculatable.size > 0) {
     const runtime = bag.tools as WrappableToolRuntime | undefined
-    if (runtime !== undefined && typeof runtime.register === 'function') {
-      restoreRegister = wrapRegister(
-        runtime,
-        service.resolve,
-        speculatable,
-        (def: WrappedDefinition) => String(def.name),
-      ).restore
+    if (runtime !== undefined && typeof runtime.get === 'function') {
+      restoreRegister = wrapLookup(runtime, service.resolve, speculatable).restore
     } else {
       ctx.logger.warn('spec-ptc: tools runtime not wrappable — resolve-first limited to wrapBindings consumers')
     }

@@ -1,71 +1,60 @@
 /**
- * Registry-level resolve-first wrapping: every tool registered AFTER this
- * plugin loads gets an execute that asks the spec-ptc daemon first. One wrap
- * covers every dispatch path — direct model tool calls AND Code Mode nested
- * dispatches — with zero upstream changes.
+ * Registry lookup-level resolve-first wrapping.
  *
- * Load-order contract: this plugin must load BEFORE tool-providing plugins
- * (their registrations are what gets wrapped). Put its row first in
- * cordis.patch.yml. Disposal restores the original register.
+ * dsh profile bundles are composed before the loader applies them, but the
+ * base bundle may register tools before a later third-party bundle activates.
+ * Wrapping `register()` therefore misses existing definitions. Wrapping the
+ * public `get()` lookup covers existing AND future definitions and every
+ * downstream dispatch path, including built-in Code Mode nested dispatches.
  *
  * @module
  */
 
-/** Structural slices of the harness ToolRuntime (work with the real one or a double). */
 export interface WrappedDefinition {
   execute(args: unknown, exec: unknown): Promise<unknown>
   [key: string]: unknown
 }
 
 export interface WrappableToolRuntime {
-  register(def: WrappedDefinition): () => void
+  get(name: string, scope?: unknown): WrappedDefinition | undefined
 }
 
 export type ResolveFn = (tool: string, args: unknown[]) => Promise<{ hit: true; result: unknown } | { hit: false }>
 
-export interface WrapHandle {
-  /** Restore the untouched register (called on plugin disposal). */
-  restore(): void
-}
+export interface WrapHandle { restore(): void }
 
 /**
- * Wrap `runtime.register` so subsequently-registered definitions execute
- * resolve-first. Only tools in `speculatable` are eligible — a speculative
- * cache can only ever serve pure tools; everything else runs untouched.
- *
- * The original definition object is never mutated; the wrap is a shallow
- * copy with a new execute, preserving output/finalizeContent behavior
- * (a hit simply leaves execution-local projections unset, which the
- * finalization contract already treats as "no rich projection").
+ * Wrap the registry's definition lookup resolve-first for allowlisted pure
+ * tools. The returned wrapper definition is memoized by original definition
+ * identity, preserving stable lookup identity until a scope or HMR update
+ * supplies a new definition. Resolver trouble always falls through.
  */
-export function wrapRegister(
+export function wrapLookup(
   runtime: WrappableToolRuntime,
   resolve: ResolveFn,
   speculatable: ReadonlySet<string>,
-  toolNameOf: (def: WrappedDefinition) => string,
 ): WrapHandle {
-  const original = runtime.register.bind(runtime)
-  runtime.register = (def: WrappedDefinition): (() => void) => {
-    const toolName = toolNameOf(def)
-    if (!speculatable.has(toolName)) return original(def)
-    const wrapped: WrappedDefinition = {
-      ...def,
+  const originalGet = runtime.get.bind(runtime)
+  const wrapped = new WeakMap<WrappedDefinition, WrappedDefinition>()
+  runtime.get = (name: string, scope?: unknown): WrappedDefinition | undefined => {
+    const definition = originalGet(name, scope)
+    if (definition === undefined || !speculatable.has(name)) return definition
+    const cached = wrapped.get(definition)
+    if (cached !== undefined) return cached
+    const projected: WrappedDefinition = {
+      ...definition,
       async execute(args: unknown, exec: unknown): Promise<unknown> {
         try {
-          const argList = Array.isArray(args) ? args : [args]
-          const outcome = await resolve(toolName, argList)
+          const outcome = await resolve(name, Array.isArray(args) ? args : [args])
           if (outcome.hit) return outcome.result
         } catch {
-          // fail-open: any resolver trouble runs the tool normally
+          // fail-open: the original tool remains authoritative
         }
-        return def.execute(args, exec)
+        return definition.execute(args, exec)
       },
     }
-    return original(wrapped)
+    wrapped.set(definition, projected)
+    return projected
   }
-  return {
-    restore() {
-      runtime.register = original
-    },
-  }
+  return { restore() { runtime.get = originalGet } }
 }
