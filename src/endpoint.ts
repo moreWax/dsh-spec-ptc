@@ -112,9 +112,23 @@ export async function startEndpoint(opts: EndpointOptions): Promise<EndpointHand
   await new Promise<void>((resolveListen) => { server.listen(0, '127.0.0.1', resolveListen) })
   const address = server.address()
   if (address === null || typeof address === 'string') throw new Error('spec-ptc: endpoint got no address')
-  return {
-    url: `http://127.0.0.1:${String(address.port)}`,
-    token,
-    close: () => new Promise<void>((resolveClose) => { server.close(() => { resolveClose() }) }),
+  return new LoopbackEndpoint(server, `http://127.0.0.1:${String(address.port)}`, token)
+}
+
+/** Concrete lifecycle owner for the privileged loopback server. */
+class LoopbackEndpoint implements EndpointHandle {
+  private closing: Promise<void> | undefined
+
+  constructor(
+    private readonly server: Server,
+    readonly url: string,
+    readonly token: string,
+  ) {}
+
+  close(): Promise<void> {
+    this.closing ??= new Promise<void>((resolveClose, rejectClose) => {
+      this.server.close((error) => { if (error) rejectClose(error); else resolveClose() })
+    })
+    return this.closing
   }
 }

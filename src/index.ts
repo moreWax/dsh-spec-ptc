@@ -26,14 +26,15 @@ import { startEndpoint } from './endpoint.js'
 import type { EndpointHandle, EndpointToolRuntime } from './endpoint.js'
 import { wrapLookup } from './wrap-registry.js'
 import type { WrappableToolRuntime } from './wrap-registry.js'
-import { ReplFeedAdapter } from './repl-adapter.js'
-import type { ToolCallDeltaChunk } from './repl-adapter.js'
+import { TurnStreamBridge } from './stream-bridge.js'
+import type { SessionEventLike } from './stream-bridge.js'
 
 export { SpecClient } from './client.js'
 export { ensureDaemon, DEFAULT_DAEMON_CONFIG } from './daemon.js'
 export { startEndpoint } from './endpoint.js'
 export { wrapLookup } from './wrap-registry.js'
 export { ReplFeedAdapter, rewriteLine } from './repl-adapter.js'
+export { TurnStreamBridge } from './stream-bridge.js'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'spec-ptc'
@@ -91,19 +92,6 @@ export interface SpecPtcService {
   resolve(tool: string, args: unknown[]): Promise<{ hit: true; result: unknown } | { hit: false }>
   /** Whether the daemon is currently reachable. */
   available(): boolean
-}
-
-/** Minimal shape of the session events this bridge consumes (defensive: log is authoritative). */
-interface SessionEventLike {
-  type?: string
-  turn?: number
-  chunk?: {
-    type?: string
-    text?: string
-    index?: number
-    name?: string
-    argumentsDelta?: string
-  }
 }
 
 export async function apply(ctx: Context, config: Config): Promise<void> {
@@ -169,75 +157,18 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   }
 
   // ---- stream bridge -----------------------------------------------------
-  // Feeds are serialized to preserve stream order; a feed failure disables
-  // the bridge for the rest of the turn rather than spamming the log.
-  let lastTurn: number | undefined
-  let inTurn = false
-  let feedChain: Promise<void> = Promise.resolve()
-  let feedBroken = false
-  const replAdapter = new ReplFeedAdapter()
-
-  const enqueue = (work: () => Promise<void>): void => {
-    feedChain = feedChain.then(work).catch((error) => {
-      if (!feedBroken) {
-        feedBroken = true
-        ctx.logger.warn(`spec-ptc: daemon feed failed (${String(error)}) — bridge disabled until next turn`)
-      }
-    })
-  }
-
-  // 'session/event' is declaration-merged onto cordis Events by dsh-session;
-  // this package intentionally avoids that dependency, so subscribe through
-  // a narrow local signature (same runtime call, honest types).
+  const bridge = new TurnStreamBridge({
+    client,
+    logger: ctx.logger,
+    feedEnabled: config.feedEnabled !== false,
+    translateRunCode: config.translateRunCode !== false,
+  })
+  // session/event is declaration-merged by dsh-session, which stays optional.
   const onSessionEvent = ctx.on.bind(ctx) as unknown as (
     name: 'session/event',
     listener: (session: unknown, event: SessionEventLike) => void,
   ) => () => void
-  // Turn state updates SYNCHRONOUSLY in the listener (so ordering decisions
-  // are always current); only the daemon writes are serialized through the
-  // queue. An assistant/message with a turn LOWER than the stream's current
-  // turn is a concurrent older stream finishing — ignored, not a boundary.
-  const beginTurn = (turn: number): void => {
-    if (inTurn) enqueue(async () => { await client.turnEnd() })
-    enqueue(async () => { await client.turnBegin({}) })
-    inTurn = true
-    lastTurn = turn
-  }
-  const endTurn = (): void => {
-    const finished = lastTurn
-    enqueue(async () => {
-      const metrics = await client.turnEnd()
-      ctx.logger.info(
-        `spec-ptc: turn ${String(finished)} — speculated ${String(metrics.speculated ?? 0)}, ` +
-        `claimed ${String(metrics.claimed ?? 0)}, evicted ${String(metrics.evicted ?? 0)}`,
-      )
-    })
-    inTurn = false
-  }
-
-  const disposeListener = onSessionEvent('session/event', (_session: unknown, event: SessionEventLike) => {
-    if (config.feedEnabled === false || feedBroken) return
-    const turn = event?.turn
-    if (event?.type === 'assistant/chunk' && typeof turn === 'number') {
-      if (!inTurn || turn !== lastTurn) beginTurn(turn)
-      const chunk = event.chunk
-      if (chunk?.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text !== '') {
-        // Preserve the stock upstream path (raw ```repl blocks in assistant text).
-        enqueue(async () => { await client.feed(chunk.text as string) })
-      } else if (
-        config.translateRunCode !== false
-        && chunk?.type === 'tool-call-delta'
-        && typeof chunk.index === 'number'
-        && typeof chunk.argumentsDelta === 'string'
-      ) {
-        const translated = replAdapter.push(chunk as ToolCallDeltaChunk)
-        for (const delta of translated) enqueue(async () => { await client.feed(delta) })
-      }
-    } else if (event?.type === 'assistant/message' && inTurn && turn === lastTurn) {
-      for (const delta of replAdapter.finish()) enqueue(async () => { await client.feed(delta) })
-      endTurn()
-    }
-  })
+  const disposeListener = onSessionEvent('session/event', (_session, event) => { bridge.accept(event) })
 
   ctx.effect(() => {
     return () => {
